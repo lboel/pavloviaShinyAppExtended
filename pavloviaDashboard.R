@@ -8,13 +8,9 @@ library(shinyjs)
 library(shinydashboard)
 library(shinycssloaders)
 library(shinyalert)
-
-# library(rsconnect)
-# deployApp()
-
+source("pavloviaHelperFunctions.R")
 
 ui <- dashboardPage(
-  # Application title
   dashboardHeader(title = "pavloviaShinyApp"),
   dashboardSidebar(
     column(12,
@@ -30,97 +26,17 @@ ui <- dashboardPage(
       fluidRow(
         column(6, div(style = "height:100px;"))
       ),
-      downloadButton("downloadData", "Download merged data") # %>% withSpinner(color = "#0dc5c1")
+      downloadButton("downloadData", "Download merged data")
     )
   ),
-
-
-  # Main panel for displaying outputs ----
   dashboardBody(
     useShinyjs(),
+    useShinyalert(),
     uiOutput("dataAnalysisUI")
   )
 )
 
 
-
-getProjectList <- function(accessToken) {
-  gitlabPavloviaURL <- paste0("https://gitlab.pavlovia.org/api/v4/projects/?owned=true") # API - URL to download whole repository
-  r <- GET(gitlabPavloviaURL, add_headers("PRIVATE-TOKEN" = accessToken)) # Get list of available projects
-  bin <- content(r, "raw") # Writing Binary
-  projects <- read_file(bin) %>% jsonlite::fromJSON()
-  projects
-}
-
-getTibbleOfDataDirectoryOfProject <- function(accessToken, projectID) {
-  gitlabPavloviaURL <- paste0("https://gitlab.pavlovia.org/api/v4/projects/", projectID, "/repository/archive.zip") # API - URL to download whole repository
-  r <- GET(gitlabPavloviaURL, add_headers("PRIVATE-TOKEN" = accessToken)) # Getting Archive
-  bin <- content(r, "raw") # Writing Binary
-  temp <- tempfile() # Init Tempfile
-  writeBin(bin, temp) # Write Binary of Archive to Tempfile
-
-  listofFiles <- unzip(
-    zipfile = temp, overwrite = T,
-    junkpaths = T, list = T
-  ) # Unzip only list of all files in the archive.zip file
-
-  csvFiles <- grep("data/*.csv", x = listofFiles$Name, value = T) # Grep only the csv Files (Pattern can be extended to get only data-csv file)
-
-  unzip(
-    zipfile = temp, overwrite = T,
-    junkpaths = T, files = csvFiles, exdir = "temp"
-  ) # Unzip the csv Files in the temp-file
-
-  csvFilesPaths <- list.files("temp/", full.names = T) # Get the unzipped csv-Files in the temp-directory
-
-  # To get only Valid CSV-Files and enable us to filter by DateTime of the File we can parse the files standard date-time string in the Pavlovia-Default FileNames
-  dateTimeOfFiles <- tibble(filepaths = csvFilesPaths) %>%
-    mutate(dateTime = str_extract(filepaths, "[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}h[0-9]{2}")) %>%
-    filter(!is.na(dateTime)) %>%
-    mutate(dateTime = parse_datetime(dateTime, "%Y-%m-%d_%Hh%M"))
-  # %>%  filter(dateTime > parse_datetime("2019-02-01_15h00", "%Y-%m-%d_%Hh%M")) # This can be used to Filter by a specific time
-
-  # Purrr Magic  - Thanks to https://clauswilke.com/blog/2016/06/13/reading-and-combining-many-tidy-data-files-in-r/
-
-  # Now the read the desired data Files with purrr:
-  data <- data_frame(filename = dateTimeOfFiles$filepaths, date = dateTimeOfFiles$dateTime) %>% # create a data frame
-    # holding the file names
-    mutate(
-      file_contents = map(
-        filename, # read files into
-        ~ read.csv(file.path(.), colClasses = "character")
-        # ~ read.table(file.path(.),
-        # allowEscapes = TRUE,
-        # sep = ",", header=T,
-        # fileEncoding = "UTF-8")
-      ) # a new data column
-    ) %>% mutate(
-      bytes = file.info(csvFilesPaths)$size,
-      size = file.info(csvFilesPaths)$size %>% utils:::format.object_size(., "auto")
-    )
-
-  # Unlink temp because we don't need it anymore
-  unlink("temp", recursive = T)
-  data
-}
-
-
-mergeDataTibble <- function(data) {
-  dataMerged <-
-    # Read in all available data in a single tibble
-    data %>%
-    filter(fileDimRows > 0) %>%
-    select(file_contents) %>%
-    # remove filenames, not needed anynmore
-    unnest(cols = c(file_contents)) %>%
-    replace(. == "", NA)
-}
-
-
-
-
-
-# Define server logic
 server <- function(input, output, session) {
   disable("downloadData")
   data <- reactiveVal()
@@ -128,32 +44,29 @@ server <- function(input, output, session) {
   projects <- reactiveVal()
 
 
-
   output$dataAnalysisUI <- renderUI({
     if (is.null(dataMerged())) {
-      return(h1("First level title"))
+      if (is.null(projects())) {
+        return(h1("Submit valid Access Token (ensure you have projects in Pavlovia)"))
+      }
+      if (nrow(projects()) > 0) {
+        return(tagList(
+          h1("Your Projects"),
+          DT::dataTableOutput("availableProjects")
+        ))
+      } else {
+      }
     } else {
       return(tabsetPanel(
         tabPanel("Files", DT::dataTableOutput("dataOverview")),
         tabPanel("Descriptives", DT::dataTableOutput("descriptives")),
         tabPanel("Histogram", fluidRow(
           selectInput("histAV", choices = names(dataMerged()), label = "Histogram-AV"),
-          plotOutput(outputId = "plot"))),
-        tabPanel("MergedData", DT::dataTableOutput("fullData") ))
-      )
+          plotOutput(outputId = "plot")
+        )),
+        tabPanel("MergedData", DT::dataTableOutput("fullData"))
+      ))
     }
-  })
-  
-  
-
-  observeEvent(input$submitToken, {
-    req(input$token)
-    token(input$token)
-    projects(getProjectList(token()))
-    projectNames <- projects()$name
-    projectIDs <- projects()$id
-    choices <- setNames(as.list(projectIDs), projectNames)
-    updateSelectInput(session, "project", choices = choices)
   })
 
   output$plot <- renderPlot({
@@ -167,88 +80,62 @@ server <- function(input, output, session) {
     p
   })
 
+
+  observeEvent(input$submitToken, {
+    projects(NULL)
+    data(NULL)
+    req(input$token)
+    token(input$token)
+    responseObject <- getProjectList(token())
+    if (!responseObject$isError) {
+      projects(responseObject$data)
+      projectNames <- projects()$name
+      projectIDs <- projects()$id
+      choices <- setNames(as.list(projectIDs), projectNames)
+      updateSelectInput(session, "project", choices = choices)
+    } else {
+      shinyalert(html = TRUE, "Oops!", responseObject$message, type = "error")
+    }
+  })
+
   observeEvent(input$getData, {
     data(NULL)
+    disable("downloadData")
     req(input$project)
     req(token())
     print(input$project)
-    projectID <- input$project # input$project
-    accessToken <- token() # token()
+    projectID <- input$project
+    accessToken <- token()
+    responseObject <- getTibbleOfDataDirectoryOfProject(accessToken, projectID)
 
-
-    responseObject <- list(data = c(), message = "OK", isError = F)
-    gitlabPavloviaURL <- paste0("https://gitlab.pavlovia.org/api/v4/projects/", projectID, "/repository/archive.zip") # API - URL to download whole repository
-    r <- GET(gitlabPavloviaURL, add_headers("PRIVATE-TOKEN" = accessToken)) # Getting Archive
-
-    if (r$status_code == "200") {
-      print("Got Response")
-      bin <- content(r, "raw") # Writing Binary
-      temp <- tempfile() # Init Tempfile
-      writeBin(bin, temp) # Write Binary of Archive to Tempfile
-
-      listofFiles <- unzip(
-        zipfile = temp, overwrite = T,
-        junkpaths = T, list = T
-      ) # Unzip only list of all files in the archive.zip file
-      print(listofFiles)
-      csvFiles <- grep(pattern = "*data/.*.csv", perl = F, x = listofFiles$Name, value = T) # Grep only the csv Files (Pattern can be extended to get only data-csv file)
-      print(csvFiles)
-      if (length(csvFiles) > 0) {
-        print(csvFiles)
-        print("Got CSVFiles")
-        unzip(
-          zipfile = temp, overwrite = T,
-          junkpaths = T, files = csvFiles, exdir = "temp"
-        ) # Unzip the csv Files in the temp-file
-
-        csvFilesPaths <- list.files("temp/", full.names = T) # Get the unzipped csv-Files in the temp-directory
-
-        # To get only Valid CSV-Files and enable us to filter by DateTime of the File we can parse the files standard date-time string in the Pavlovia-Default FileNames
-        dateTimeOfFiles <- tibble(filepaths = csvFilesPaths) %>%
-          mutate(dateTime = str_extract(filepaths, "[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}h[0-9]{2}")) %>%
-          filter(!is.na(dateTime)) %>%
-          mutate(dateTime = parse_datetime(dateTime, "%Y-%m-%d_%Hh%M"))
-        # %>%  filter(dateTime > parse_datetime("2019-02-01_15h00", "%Y-%m-%d_%Hh%M")) # This can be used to Filter by a specific time
-
-        # Purrr Magic  - Thanks to https://clauswilke.com/blog/2016/06/13/reading-and-combining-many-tidy-data-files-in-r/
-        print(dateTimeOfFiles)
-        # Now the read the desired data Files with purrr:
-        datatemp <- data_frame(filename = dateTimeOfFiles$filepaths, date = dateTimeOfFiles$dateTime) %>%
-          # create a data frame
-          # holding the file names
-          mutate(
-            file_contents = map(
-              filename, # read files into
-              ~ tryCatch(read.csv(file.path(.), colClasses = "character"), error = function(e) {
-                NULL
-              })
-            ) # a new data column
-          ) %>%
-          rowwise() %>%
-          mutate(
-            fileDimRows = ifelse(is.null(dim(file_contents)[1]), 0, dim(file_contents)[1]),
-            fileDimColumns = ifelse(is.null(dim(file_contents)[2]), 0, dim(file_contents)[2])
-          ) %>%
-          ungroup()
-
-        unlink("temp", recursive = T)
-
-        responseObject$data <- datatemp
-
-        data(datatemp)
-        enable("downloadData")
-      }
+    if (!responseObject$isError) {
+      data(responseObject$data)
+      enable("downloadData")
+    } else {
+      shinyalert(html = TRUE, "Oops!", responseObject$message, type = "error")
     }
-
-    shinyalert("Oops!", "Something went wrong.", type = "error")
   })
+
+ observeEvent(input$availableProjects_rows_selected,
+              {
+                print(input$availableProjects_rows_selected)
+                projectNames <- projects()$name
+                projectIDs <- projects()$id
+                choices <- setNames(as.list(projectIDs), projectNames)
+                updateSelectInput(session, "project", choices = choices, selected =choices[input$availableProjects_rows_selected] )
+                
+              })
   output$fullData <- DT::renderDataTable({
-    DT::datatable( dataMerged() %>%
-                    select(-file_contents),
-                  options = list(scrollX = TRUE)
-    )})
-    
-    
+    DT::datatable(dataMerged(),
+      options = list(scrollX = TRUE)
+    )
+  })
+
+  output$availableProjects <- DT::renderDataTable({
+    DT::datatable(projects(), selection = list(mode = 'single'),
+      options = list(scrollX = TRUE)
+    )
+  })
   # Table of selected dataset ----
   output$dataOverview <- DT::renderDataTable({
     if (!is.null(data())) {
