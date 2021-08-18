@@ -42,12 +42,19 @@ server <- function(input, output, session) {
   data <- reactiveVal()
   token <- reactiveVal()
   projects <- reactiveVal()
-
+  generatedAccessToken <- reactiveVal("No Access Token Generated")
 
   output$dataAnalysisUI <- renderUI({
     if (is.null(dataMerged())) {
       if (is.null(projects())) {
-        return(h1("Submit valid Access Token (ensure you have projects in Pavlovia)"))
+        return(  box(width = 12,title = "Generate AccessToken",
+            textInput("nameUser", label = h3("Pavlovia-User")),
+            passwordInput("passwordUser", label = h3("Pavlovia-Password")),
+            actionButton("submitLogin",label = "Generate AccessToken"),
+            h2(generatedAccessToken()),
+            h3("After generating save it for later.")
+          )
+          )
       }
       if (nrow(projects()) > 0) {
         return(tagList(
@@ -80,7 +87,19 @@ server <- function(input, output, session) {
     p
   })
 
-
+  observeEvent(input$submitLogin, {
+    
+    req(input$nameUser)
+    req(input$passwordUser)
+    newToken <-getAccessTokenByUsernameAndPassword(input$nameUser,input$passwordUser)
+    generatedAccessToken(newToken)
+    
+    updateTextInput(session,"token",value = newToken)
+  })
+  
+  
+  
+  
   observeEvent(input$submitToken, {
     projects(NULL)
     data(NULL)
