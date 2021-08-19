@@ -1,1 +1,2 @@
-# pavloviaShinyAppExtended
+# Universal Pavlovia Shiny Dashboard
+
