@@ -11,7 +11,7 @@ library(shinyalert)
 source("pavloviaHelperFunctions.R")
 
 ui <- dashboardPage(
-  dashboardHeader(title = "pavloviaShinyApp"),
+  dashboardHeader(title = "UPS-Dashboard"),
   dashboardSidebar(
     column(12,
       align = "center", offset = 0,
@@ -42,7 +42,8 @@ server <- function(input, output, session) {
   data <- reactiveVal()
   token <- reactiveVal()
   projects <- reactiveVal()
-  generatedAccessToken <- reactiveVal("No Access Token Generated")
+
+  generatedAccessToken <- reactiveValues(name="",token="")
 
   output$dataAnalysisUI <- renderUI({
     if (is.null(dataMerged())) {
@@ -51,8 +52,9 @@ server <- function(input, output, session) {
             textInput("nameUser", label = h3("Pavlovia-User")),
             passwordInput("passwordUser", label = h3("Pavlovia-Password")),
             actionButton("submitLogin",label = "Generate AccessToken"),
-            h2(generatedAccessToken()),
-            h3("After generating save it for later.")
+            h2(paste0(generatedAccessToken$name,ifelse(nchar(generatedAccessToken$name) > 5,": ",""),generatedAccessToken$token,"")),
+            h3("After generating save it for later."),
+            h4("See https://gitlab.pavlovia.org/profile/personal_access_tokens for more information")
           )
           )
       }
@@ -91,14 +93,17 @@ server <- function(input, output, session) {
     
     req(input$nameUser)
     req(input$passwordUser)
-    newToken <-getAccessTokenByUsernameAndPassword(input$nameUser,input$passwordUser)
-    generatedAccessToken(newToken)
-    
-    updateTextInput(session,"token",value = newToken)
+    responseObject <-getAccessTokenByUsernameAndPassword(input$nameUser,input$passwordUser)
+    generatedAccessToken$name <- responseObject$name
+    generatedAccessToken$token <- responseObject$token
+    if(responseObject$isError)
+    {
+      generatedAccessToken$name <- "Login Error"
+      generatedAccessToken$token <- "No Access Token Generated"
+      shinyalert(html = TRUE, "Oops!", responseObject$message, type = "error")
+    } else {
+    updateTextInput(session,"token",value =  generatedAccessToken$token) }
   })
-  
-  
-  
   
   observeEvent(input$submitToken, {
     projects(NULL)
