@@ -42,7 +42,7 @@ getAccessTokenByUsernameAndPassword <- function(username,password)
 
 getProjectList <- function(accessToken) {
   responseObject <- list(data = c(), message = "OK", isError = F)
-  gitlabPavloviaURL <- paste0("https://gitlab.pavlovia.org/api/v4/projects/?owned=true") # API - URL to download whole repository
+  gitlabPavloviaURL <- paste0("https://gitlab.pavlovia.org/api/v4/projects/") # API - URL to download whole repository
   r <- GET(gitlabPavloviaURL, add_headers("PRIVATE-TOKEN" = accessToken)) # Get list of available projects
   bin <- content(r, "raw") # Writing Binary
   if (r$status_code == "200") {
